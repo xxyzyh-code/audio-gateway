@@ -32,13 +32,13 @@ export default async function handler(request) {
   }
 
   // -----------------------------
-  // 🔥 修正：先解碼，再重新編碼一次
+  // 🔥 解碼再重新編碼
   // -----------------------------
   const cleanId = decodeURIComponent(audioId);
   const finalId = encodeURIComponent(cleanId);
 
   // -----------------------------
-  // Hash 分配主 worker
+  // Hash 分配主 Worker
   // -----------------------------
   const idx = (await hashString(cleanId)) % MAIN_WORKERS.length;
   const target = `${MAIN_WORKERS[idx]}/${finalId}`;
@@ -50,15 +50,27 @@ export default async function handler(request) {
   const fetchHeaders = range ? { Range: range } : {};
 
   // -----------------------------
-  // 代理
+  // 代理請求
   // -----------------------------
-  const upstream = await fetch(target, { headers: fetchHeaders });
+  try {
+    const upstream = await fetch(target, { headers: fetchHeaders });
 
-  const headers = new Headers(upstream.headers);
-  headers.set("Accept-Ranges", "bytes");
+    // -----------------------------
+    // Headers: 保留上游，增加可 seek + CDN 緩存
+    // -----------------------------
+    const headers = new Headers(upstream.headers);
+    headers.set("Accept-Ranges", "bytes");
+    headers.set("Cache-Control", "public, max-age=864000"); // 10 天
 
-  return new Response(upstream.body, {
-    status: upstream.status,
-    headers,
-  });
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers,
+    });
+  } catch (err) {
+    console.error("Proxy fetch failed:", err.message);
+    return new Response(
+      JSON.stringify({ message: "Proxy fetch failed", error: err.message }),
+      { status: 502, headers: { "Content-Type": "application/json" } }
+    );
+  }
 }
