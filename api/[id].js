@@ -1,4 +1,4 @@
-// api/audio/[id].js （普通 Serverless Gateway）
+// api/[id].js （普通 Serverless Gateway，支持 Vercel CDN 緩存）
 
 // ----------------------------------
 // Main Worker Pool
@@ -82,6 +82,8 @@ export default async function handler(req, res) {
     res.status(upstream.status).set(headers).send(body);
   } catch (err) {
     console.error(err);
-    res.status(502).json({ message: "Proxy fetch failed.", error: err.message });
+    res
+      .status(502)
+      .json({ message: "Proxy fetch failed.", error: err.message });
   }
 }
