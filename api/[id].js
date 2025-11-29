@@ -1,4 +1,4 @@
-// api/[id].js — Serverless Gateway（Streaming + CDN + Range 支援）
+// api/[id].js — Serverless Gateway（Streaming + CDN + Range + Warm Cache）
 
 const MAIN_WORKERS = [
   "https://support.audio-main-worker.workers.dev",
@@ -12,13 +12,17 @@ function cheapHash(str) {
   return h;
 }
 
-const CACHE_TTL_DAYS = 11;
-const CACHE_TTL_SECONDS = CACHE_TTL_DAYS * 86400;
+// 建議你保留：瀏覽器短緩，CDN 極長緩
+const ONE_YEAR = 31536000; // 365 天（秒）
 
 export default async function handler(req, res) {
   try {
+    // -----------------------------
+    // 1. 解析 audioId（path + query）
+    // -----------------------------
     const url = new URL(req.url, `http://${req.headers.host}`);
     let audioId = url.searchParams.get("id");
+
     if (!audioId) {
       const parts = url.pathname.split("/").filter(Boolean);
       audioId = parts.pop();
@@ -28,40 +32,52 @@ export default async function handler(req, res) {
       return;
     }
 
+    // -----------------------------
+    // 2. Normalize: 空格、+
+    // -----------------------------
     const cleanId = decodeURIComponent(audioId.replace(/\+/g, " "));
     const finalId = encodeURIComponent(cleanId);
 
+    // -----------------------------
+    // 3. Worker 負載分配
+    // -----------------------------
     const workerIndex = cheapHash(cleanId) % MAIN_WORKERS.length;
     const target = `${MAIN_WORKERS[workerIndex]}/${finalId}`;
 
+    // -----------------------------
+    // 4. Range 支援（播放器需要）
+    // -----------------------------
     const fetchHeaders = {};
     if (req.headers.range) fetchHeaders["Range"] = req.headers.range;
 
     const upstream = await fetch(target, { headers: fetchHeaders });
 
+    // -----------------------------
+    // 5. 設置 Headers
+    // -----------------------------
     upstream.headers.forEach((v, k) => res.setHeader(k, v));
+
     res.setHeader("Accept-Ranges", "bytes");
+
+    // 🔥 CDN 專用：一年緩存 + immutable
     res.setHeader(
       "Cache-Control",
-      `public, s-maxage=${CACHE_TTL_SECONDS}, max-age=3600`
+      `public, immutable, s-maxage=${ONE_YEAR}, max-age=3600`
     );
 
-    // ---------------------------------------------
-    // 🔥 Warm Cache（首次請求後台偷偷下載完整檔案）
-    // ---------------------------------------------
+    // -----------------------------
+    // 6. Warm Cache（只在非 Range）
+    // -----------------------------
     if (!req.headers.range) {
-      // 只有非 Range（首次請求）才需要
-      const fullUrl = `${MAIN_WORKERS[workerIndex]}/${finalId}`;
-
-      // 後台 async，不阻塞播放
-      fetch(fullUrl)
+      const warmUrl = `${MAIN_WORKERS[workerIndex]}/${finalId}`;
+      fetch(warmUrl)
         .then(r => r.arrayBuffer())
         .catch(() => {});
     }
 
-    // ---------------------------------------------
-    // Streaming 回傳（保留原邏輯）
-    // ---------------------------------------------
+    // -----------------------------
+    // 7. Streaming 回傳給用戶（最重要）
+    // -----------------------------
     if (!upstream.body) {
       res.status(upstream.status).end();
       return;
