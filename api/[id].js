@@ -17,9 +17,6 @@ const CACHE_TTL_SECONDS = CACHE_TTL_DAYS * 86400;
 
 export default async function handler(req, res) {
   try {
-    // -----------------------------
-    // 1. 提取 audioId（path 或 query）
-    // -----------------------------
     const url = new URL(req.url, `http://${req.headers.host}`);
     let audioId = url.searchParams.get("id");
     if (!audioId) {
@@ -31,29 +28,17 @@ export default async function handler(req, res) {
       return;
     }
 
-    // -----------------------------
-    // 2. Normalize
-    // -----------------------------
     const cleanId = decodeURIComponent(audioId.replace(/\+/g, " "));
     const finalId = encodeURIComponent(cleanId);
 
-    // -----------------------------
-    // 3. 分配主 Worker
-    // -----------------------------
     const workerIndex = cheapHash(cleanId) % MAIN_WORKERS.length;
     const target = `${MAIN_WORKERS[workerIndex]}/${finalId}`;
 
-    // -----------------------------
-    // 4. 支援 Range
-    // -----------------------------
     const fetchHeaders = {};
     if (req.headers.range) fetchHeaders["Range"] = req.headers.range;
 
     const upstream = await fetch(target, { headers: fetchHeaders });
 
-    // -----------------------------
-    // 5. 設置 Headers
-    // -----------------------------
     upstream.headers.forEach((v, k) => res.setHeader(k, v));
     res.setHeader("Accept-Ranges", "bytes");
     res.setHeader(
@@ -61,17 +46,28 @@ export default async function handler(req, res) {
       `public, s-maxage=${CACHE_TTL_SECONDS}, max-age=3600`
     );
 
-    // -----------------------------
-    // 6. Streaming 返回內容
-    // -----------------------------
+    // ---------------------------------------------
+    // 🔥 Warm Cache（首次請求後台偷偷下載完整檔案）
+    // ---------------------------------------------
+    if (!req.headers.range) {
+      // 只有非 Range（首次請求）才需要
+      const fullUrl = `${MAIN_WORKERS[workerIndex]}/${finalId}`;
+
+      // 後台 async，不阻塞播放
+      fetch(fullUrl)
+        .then(r => r.arrayBuffer())
+        .catch(() => {});
+    }
+
+    // ---------------------------------------------
+    // Streaming 回傳（保留原邏輯）
+    // ---------------------------------------------
     if (!upstream.body) {
       res.status(upstream.status).end();
       return;
     }
 
-    // 直接將 upstream 的 body pipe 到 res，支持邊播邊下
     const reader = upstream.body.getReader();
-    const encoder = new TextEncoder();
 
     async function pump() {
       while (true) {
