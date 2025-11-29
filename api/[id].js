@@ -52,7 +52,8 @@ export default async function handler(req, res) {
     // 3. 分配 Main Worker
     // -----------------------------
     const workerIndex = cheapHash(cleanId) % MAIN_WORKERS.length;
-    const target = `${MAIN_WORKERS[workerIndex]}/${finalId}`;
+    // ⚡ 改成 query string，主 worker 才能正確識別
+    const target = `${MAIN_WORKERS[workerIndex]}/audio?id=${finalId}`;
 
     // -----------------------------
     // 4. 保留 Range 支援
