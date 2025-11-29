@@ -20,23 +20,32 @@ export default async function handler(req, res) {
     // -----------------------------
     // 1. 提取 audioId（path 或 query）
     // -----------------------------
-    let audioId = req.url.split("/").pop();
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    let audioId = url.searchParams.get("id");
+    if (!audioId) {
+      const parts = url.pathname.split("/").filter(Boolean);
+      audioId = parts.pop();
+    }
+
     if (!audioId) {
       res.status(400).send("Missing audio ID");
       return;
     }
 
+    // -----------------------------
+    // 2. Normalize: 支援空格、+ 等
+    // -----------------------------
     const cleanId = decodeURIComponent(audioId.replace(/\+/g, " "));
     const finalId = encodeURIComponent(cleanId);
 
     // -----------------------------
-    // 2. 分配主 Worker
+    // 3. 分配主 Worker
     // -----------------------------
     const workerIndex = cheapHash(cleanId) % MAIN_WORKERS.length;
     const target = `${MAIN_WORKERS[workerIndex]}/${finalId}`;
 
     // -----------------------------
-    // 3. 支持 Range
+    // 4. 支援 Range
     // -----------------------------
     const fetchHeaders = {};
     if (req.headers.range) fetchHeaders["Range"] = req.headers.range;
@@ -44,28 +53,25 @@ export default async function handler(req, res) {
     const upstream = await fetch(target, { headers: fetchHeaders });
 
     // -----------------------------
-    // 4. 讀完整 body (Buffer) → 讓 CDN 可以緩存
+    // 5. 讀完整 body → 讓 CDN 緩存
     // -----------------------------
     const arrayBuffer = await upstream.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
     // -----------------------------
-    // 5. 設置 Headers
+    // 6. 設置 Headers
     // -----------------------------
-    // CDN 緩存
+    upstream.headers.forEach((v, k) => res.setHeader(k, v));
+    res.setHeader("Accept-Ranges", "bytes");
+
+    // CDN 緩存策略
     res.setHeader(
       "Cache-Control",
       `public, s-maxage=${CACHE_TTL_SECONDS}, max-age=3600`
     );
 
-    // 保留上游 headers
-    upstream.headers.forEach((v, k) => {
-      res.setHeader(k, v);
-    });
-    res.setHeader("Accept-Ranges", "bytes");
-
     // -----------------------------
-    // 6. 返回內容
+    // 7. 返回內容
     // -----------------------------
     res.statusCode = upstream.status;
     res.end(buffer);
