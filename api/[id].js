@@ -1,4 +1,4 @@
-// api/[id].js — 普通 Serverless Gateway（支持 Vercel CDN 緩存 & Range）
+// api/[id].js — Serverless Gateway（Streaming + CDN + Range 支援）
 
 const MAIN_WORKERS = [
   "https://support.audio-main-worker.workers.dev",
@@ -26,14 +26,13 @@ export default async function handler(req, res) {
       const parts = url.pathname.split("/").filter(Boolean);
       audioId = parts.pop();
     }
-
     if (!audioId) {
       res.status(400).send("Missing audio ID");
       return;
     }
 
     // -----------------------------
-    // 2. Normalize: 支援空格、+ 等
+    // 2. Normalize
     // -----------------------------
     const cleanId = decodeURIComponent(audioId.replace(/\+/g, " "));
     const finalId = encodeURIComponent(cleanId);
@@ -53,28 +52,37 @@ export default async function handler(req, res) {
     const upstream = await fetch(target, { headers: fetchHeaders });
 
     // -----------------------------
-    // 5. 讀完整 body → 讓 CDN 緩存
-    // -----------------------------
-    const arrayBuffer = await upstream.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    // -----------------------------
-    // 6. 設置 Headers
+    // 5. 設置 Headers
     // -----------------------------
     upstream.headers.forEach((v, k) => res.setHeader(k, v));
     res.setHeader("Accept-Ranges", "bytes");
-
-    // CDN 緩存策略
     res.setHeader(
       "Cache-Control",
       `public, s-maxage=${CACHE_TTL_SECONDS}, max-age=3600`
     );
 
     // -----------------------------
-    // 7. 返回內容
+    // 6. Streaming 返回內容
     // -----------------------------
-    res.statusCode = upstream.status;
-    res.end(buffer);
+    if (!upstream.body) {
+      res.status(upstream.status).end();
+      return;
+    }
+
+    // 直接將 upstream 的 body pipe 到 res，支持邊播邊下
+    const reader = upstream.body.getReader();
+    const encoder = new TextEncoder();
+
+    async function pump() {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(Buffer.from(value));
+      }
+      res.end();
+    }
+
+    await pump();
   } catch (err) {
     console.error(err);
     res.status(502).json({
